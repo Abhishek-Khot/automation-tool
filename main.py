@@ -1,15 +1,15 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime
-import sqlite3
 import logging
+from pymongo import MongoClient
 
 # 🔥 Setup logging
 logging.basicConfig(level=logging.INFO)
 
 app = FastAPI()
 
-# 🔥 Enable CORS (important for desktop app)
+# 🔥 Enable CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -18,21 +18,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 🔥 Database setup
-conn = sqlite3.connect("users.db", check_same_thread=False)
-cursor = conn.cursor()
+# 🔥 MongoDB Connection
+MONGO_URI = "mongodb+srv://USERNAME:PASSWORD@cluster0.xxxxx.mongodb.net/?retryWrites=true&w=majority"
 
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    device_id TEXT UNIQUE,
-    first_seen TEXT,
-    last_seen TEXT,
-    total_sessions INTEGER,
-    app_version TEXT
-)
-""")
-conn.commit()
+client = MongoClient(MONGO_URI)
+db = client["coursepilot"]
+users_collection = db["users"]
 
 
 # 🚀 TRACK USER
@@ -43,26 +34,31 @@ def track(data: dict):
         course_url = data.get("course_url")
         version = data.get("app_version", "1.0")
 
-        now = datetime.now().isoformat()
+        now = datetime.utcnow()
 
         logging.info(f"Tracking: {device_id} | {course_url}")
 
-        cursor.execute("SELECT * FROM users WHERE device_id=?", (device_id,))
-        user = cursor.fetchone()
+        user = users_collection.find_one({"device_id": device_id})
 
         if user:
-            cursor.execute("""
-                UPDATE users 
-                SET last_seen=?, total_sessions=total_sessions+1, app_version=?
-                WHERE device_id=?
-            """, (now, version, device_id))
+            users_collection.update_one(
+                {"device_id": device_id},
+                {
+                    "$set": {
+                        "last_seen": now,
+                        "app_version": version
+                    },
+                    "$inc": {"total_sessions": 1}
+                }
+            )
         else:
-            cursor.execute("""
-                INSERT INTO users (device_id, first_seen, last_seen, total_sessions, app_version)
-                VALUES (?, ?, ?, ?, ?)
-            """, (device_id, now, now, 1, version))
-
-        conn.commit()
+            users_collection.insert_one({
+                "device_id": device_id,
+                "first_seen": now,
+                "last_seen": now,
+                "total_sessions": 1,
+                "app_version": version
+            })
 
         return {"status": "tracked"}
 
@@ -73,49 +69,43 @@ def track(data: dict):
 # 📊 TOTAL USERS
 @app.get("/total-users")
 def total_users():
-    cursor.execute("SELECT COUNT(*) FROM users")
-    return {"total_users": cursor.fetchone()[0]}
+    count = users_collection.count_documents({})
+    return {"total_users": count}
 
 
 # 📊 ACTIVE USERS (today)
 @app.get("/active-users")
 def active_users():
-    today = datetime.now().date().isoformat()
+    today = datetime.utcnow().date()
 
-    cursor.execute("""
-        SELECT COUNT(*) FROM users 
-        WHERE DATE(last_seen)=?
-    """, (today,))
+    count = users_collection.count_documents({
+        "last_seen": {
+            "$gte": datetime(today.year, today.month, today.day)
+        }
+    })
 
-    return {"active_users": cursor.fetchone()[0]}
+    return {"active_users": count}
 
 
 # 📊 TOTAL SESSIONS
 @app.get("/total-sessions")
 def total_sessions():
-    cursor.execute("SELECT SUM(total_sessions) FROM users")
-    result = cursor.fetchone()[0]
-    return {"total_sessions": result if result else 0}
+    pipeline = [
+        {"$group": {"_id": None, "total": {"$sum": "$total_sessions"}}}
+    ]
+
+    result = list(users_collection.aggregate(pipeline))
+
+    total = result[0]["total"] if result else 0
+    return {"total_sessions": total}
 
 
-# 📊 ALL USERS (DEBUG)
+# 📊 ALL USERS
 @app.get("/user-stats")
 def user_stats():
-    cursor.execute("SELECT * FROM users")
-    rows = cursor.fetchall()
+    users = list(users_collection.find({}, {"_id": 0}))
 
-    return {
-        "users": [
-            {
-                "device_id": r[1],
-                "first_seen": r[2],
-                "last_seen": r[3],
-                "total_sessions": r[4],
-                "version": r[5],
-            }
-            for r in rows
-        ]
-    }
+    return {"users": users}
 
 
 # ❤️ HEALTH CHECK
