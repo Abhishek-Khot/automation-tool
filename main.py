@@ -2,14 +2,15 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime
 import logging
+import os
 from pymongo import MongoClient
 
-# 🔥 Setup logging
+# 🔥 Logging
 logging.basicConfig(level=logging.INFO)
 
 app = FastAPI()
 
-# 🔥 Enable CORS
+# 🔥 CORS (for desktop app)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -18,9 +19,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 🔥 MongoDB Connection
-MONGO_URI = "mongodb+srv://USERNAME:PASSWORD@cluster0.xxxxx.mongodb.net/?retryWrites=true&w=majority"
+# 🔥 MongoDB ENV
+MONGO_URI = os.getenv("MONGO_URI")
 
+if not MONGO_URI:
+    raise Exception("❌ MONGO_URI not set in environment variables")
+
+# 🔥 MongoDB Connection
 client = MongoClient(MONGO_URI)
 db = client["coursepilot"]
 users_collection = db["users"]
@@ -100,11 +105,10 @@ def total_sessions():
     return {"total_sessions": total}
 
 
-# 📊 ALL USERS
+# 📊 ALL USERS (DEBUG)
 @app.get("/user-stats")
 def user_stats():
     users = list(users_collection.find({}, {"_id": 0}))
-
     return {"users": users}
 
 
